@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>스트리머 화면 - STOMP 버전</title>
+    <title>스트리머 화면 - 리팩토링 버전</title>
 
     <!-- STOMP 관련 라이브러리 추가 -->
     <script src="https://cdn.jsdelivr.net/npm/sockjs-client/dist/sockjs.min.js"></script>
@@ -70,7 +70,7 @@
             cursor: not-allowed;
         }
 
-        h2 {
+        h2, h3 {
             color: #333;
         }
 
@@ -84,6 +84,7 @@
         .connection-form input {
             width: 200px;
             margin-right: 10px;
+            margin-bottom: 10px;
         }
 
         .status {
@@ -103,17 +104,29 @@
             color: #721c24;
             border: 1px solid #f5c6cb;
         }
+
+        .system-message {
+            color: #6c757d;
+            font-style: italic;
+        }
     </style>
 </head>
 
 <body>
     <div id="container">
-        <h2>스트리머 채팅 화면 - STOMP 버전</h2>
+        <h2>스트리머 채팅 화면 - 리팩토링 버전</h2>
 
         <!-- 연결 설정 폼 -->
         <div class="connection-form">
-            <label for="streamKeyInput">스트림 키:</label>
-            <input type="text" id="streamKeyInput" placeholder="예: myStream123">
+            <div>
+                <label for="streamKeyInput">스트림 키:</label>
+                <input type="text" id="streamKeyInput" placeholder="예: a1b2c3d4" value="a1b2c3d4">
+            </div>
+            <div>
+                <!-- [추가] JWT 토큰 입력란 -->
+                <label for="jwtInput">JWT 토큰:</label>
+                <input type="text" id="jwtInput" placeholder="Bearer eyJhbGci..." value="Bearer streamer-a1b2c3d4-token">
+            </div>
             <button onclick="connectStreamer()" id="connectBtn">채널 시작</button>
             <button onclick="disconnectStreamer()" id="disconnectBtn" disabled>연결 종료</button>
         </div>
@@ -140,22 +153,20 @@
 
     <script>
         // 전역 변수 선언
-        let stompClient = null;         // STOMP 클라이언트 객체
-        let streamKey = '';             // 스트림 키 (채널 식별자)
-        let isConnected = false;        // STOMP 연결 상태
-        let chatSubscription = null;    // 채팅 토픽 구독 객체
-        let participantSubscription = null; // 참가자 토픽 구독 객체
+        let stompClient = null;
+        let streamKey = '';
+        let nickname = '스트리머';
 
         /**
          * 스트리머 채널 연결 함수
-         * STOMP 프로토콜을 사용하여 웹소켓 서버에 연결
          */
         function connectStreamer() {
             // 1. 입력값 검증
             streamKey = document.getElementById('streamKeyInput').value.trim();
+            const jwtToken = document.getElementById('jwtInput').value.trim(); // [추가] JWT 토큰 가져오기
 
-            if (!streamKey) {
-                alert('스트림 키를 입력해주세요.');
+            if (!streamKey || !jwtToken) {
+                alert('스트림 키와 JWT 토큰을 모두 입력해주세요.');
                 return;
             }
 
@@ -164,23 +175,22 @@
                 stompClient.disconnect();
             }
 
-            // 3. SockJS 소켓 생성 (웹소켓 fallback 지원)
+            // 3. SockJS 소켓 생성
             const socket = new SockJS('http://localhost:8080/ws');
 
             // 4. STOMP 클라이언트 생성
             stompClient = Stomp.over(socket);
-
-            // 5. STOMP 디버그 메시지 비활성화 (선택사항)
             stompClient.debug = null;
 
+            // [변경] 5. 연결 시 헤더에 JWT 토큰 추가
+            const headers = { 'Authorization': jwtToken };
+
             // 6. STOMP 서버 연결 시도
-            stompClient.connect({},
-                // 연결 성공 콜백 함수
+            stompClient.connect(headers,
                 function (frame) {
                     console.log('STOMP 연결 성공:', frame);
                     onConnected();
                 },
-                // 연결 실패 콜백 함수
                 function (error) {
                     console.error('STOMP 연결 실패:', error);
                     onError(error);
@@ -192,123 +202,76 @@
          * 연결 성공시 처리 함수
          */
         function onConnected() {
-            isConnected = true;
-
-            // UI 상태 업데이트
             updateConnectionUI(true);
-            addMessage('시스템', `스트리머 채널 ${streamKey}를 시작했습니다.`);
+            addMessage('시스템', `스트리머 채널 ${streamKey}을(를) 시작했습니다.`, true);
 
-            // 토픽 구독 시작
-            subscribeToTopics();
+            // [변경] 새로운 엔드포인트로 구독 시작
+            subscribeToChannels();
 
-            // 스트리머 입장 메시지 서버로 전송
-            sendStreamerJoinMessage();
+            // [변경] 스트리머가 채널에 참여했음을 서버에 알림
+            sendJoinMessage();
         }
 
         /**
-         * 토픽 구독 설정 함수
+         * 채널 구독 설정 함수
          */
-        function subscribeToTopics() {
-            // 1. 채팅 메시지 토픽 구독 (/topic/chat/{streamKey})
-            chatSubscription = stompClient.subscribe(`/topic/chat/${streamKey}`, function (message) {
-                console.log('채팅 메시지 수신:', message.body);
+        function subscribeToChannels() {
+            // [변경] 1. 채팅 및 시스템 메시지 채널 구독 (/sub/{streamKey}/chat)
+            stompClient.subscribe(`/sub/${streamKey}/chat`, function (message) {
+                const data = JSON.parse(message.body);
+                console.log('채팅 메시지 수신:', data);
 
-                try {
-                    const data = JSON.parse(message.body);
-
-                    // 메시지 타입별 처리
-                    switch (data.type) {
-                        case 'chat':
-                            // 채팅 메시지 화면에 표시
-                            addMessage(data.sender, data.message);
-                            break;
-
-                        case 'participant_join':
-                            // 시청자 입장 알림
-                            addMessage('시스템', `${data.nickname}(${data.userId})님이 입장했습니다.`);
-                            break;
-
-                        case 'participant_leave':
-                            // 시청자 퇴장 알림
-                            addMessage('시스템', `${data.nickname}(${data.userId})님이 퇴장했습니다.`);
-                            break;
-
-                        default:
-                            console.log('알 수 없는 채팅 메시지 타입:', data.type);
-                    }
-                } catch (error) {
-                    console.error('채팅 메시지 파싱 오류:', error);
+                // [변경] 새로운 DTO 구조에 맞춰 처리
+                if (data.type) {
+                    // SystemMessageDto: 시스템 메시지 (입장, 퇴장 알림 등)
+                    addMessage('시스템', data.message, true);
+                } else {
+                    // ChatMessageDto: 실제 채팅 메시지
+                    addMessage(data.nickname, data.message, false);
                 }
             });
 
-            // 2. 참가자 목록 전용 토픽 구독 (/topic/participants/{streamKey}) - 스트리머 전용
-            participantSubscription = stompClient.subscribe(`/topic/participants/${streamKey}`, function (message) {
-                console.log('참가자 목록 수신:', message.body);
+            // [변경] 2. 참가자 목록 업데이트 채널 구독 (/sub/{streamKey}/participants)
+            stompClient.subscribe(`/sub/${streamKey}/participants`, function (message) {
+                const data = JSON.parse(message.body);
+                console.log('참가자 목록 수신:', data);
 
-                try {
-                    const data = JSON.parse(message.body);
-
-                    if (data.type === 'participants_update') {
-                        // 참가자 목록 갱신
-                        updateParticipants(data.participants);
-                    }
-                } catch (error) {
-                    console.error('참가자 목록 파싱 오류:', error);
+                // ParticipantListDto: 참가자 목록
+                if (data.participants) {
+                    updateParticipants(data.participants);
                 }
+            });
+
+            // [추가] 3. 개인 알림 채널 구독 (강퇴, 채팅금지 등을 위함)
+            stompClient.subscribe('/user/queue/notifications', function (message) {
+                const notification = JSON.parse(message.body);
+                alert(`개인 알림 수신: ${notification.message}`);
             });
         }
 
         /**
-         * 스트리머 입장 메시지 전송
+         * 스트리머 참여 메시지 전송
          */
-        function sendStreamerJoinMessage() {
-            const streamerJoinMessage = {
-                type: 'streamer_join',
-                streamKey: streamKey,
-                timestamp: new Date().toISOString()
-            };
-
-            // 서버의 /app/streamer/join 엔드포인트로 메시지 전송
-            stompClient.send('/app/streamer/join', {}, JSON.stringify(streamerJoinMessage));
+        function sendJoinMessage() {
+            // [변경] 새로운 엔드포인트로 참여 메시지 전송
+            stompClient.send(`/pub/stream/${streamKey}/join`, {}, {});
         }
 
         /**
          * 연결 종료 함수
          */
         function disconnectStreamer() {
-            if (stompClient && isConnected) {
-                // 스트리머 퇴장 메시지 전송
-                const streamerLeaveMessage = {
-                    type: 'streamer_leave',
-                    streamKey: streamKey,
-                    timestamp: new Date().toISOString()
-                };
-
-                stompClient.send('/app/streamer/leave', {}, JSON.stringify(streamerLeaveMessage));
-
-                // 구독 해제
-                if (chatSubscription) {
-                    chatSubscription.unsubscribe();
-                    chatSubscription = null;
-                }
-
-                if (participantSubscription) {
-                    participantSubscription.unsubscribe();
-                    participantSubscription = null;
-                }
-
-                // STOMP 연결 종료
-                stompClient.disconnect();
-                stompClient = null;
-                isConnected = false;
-
-                // UI 상태 업데이트
-                updateConnectionUI(false);
-                addMessage('시스템', '채널 연결이 종료되었습니다.');
-
-                // 참가자 목록 초기화
-                document.getElementById('participants').innerHTML = '<li>참가자가 없습니다.</li>';
-                document.getElementById('participantCount').textContent = '(0명)';
+            if (stompClient && stompClient.connected) {
+                // 연결 종료 (자동으로 StompDisconnectEvent가 처리함)
+                stompClient.disconnect(function() {
+                    updateConnectionUI(false);
+                    addMessage('시스템', '채널 연결이 종료되었습니다.', true);
+                    console.log('STOMP 연결 해제됨');
+                    
+                    // 참가자 목록 초기화
+                    document.getElementById('participants').innerHTML = '<li>참가자가 없습니다.</li>';
+                    document.getElementById('participantCount').textContent = '(0명)';
+                });
             }
         }
 
@@ -320,7 +283,7 @@
             const message = messageInput.value.trim();
 
             // 연결 상태 및 메시지 유효성 검증
-            if (!stompClient || !isConnected) {
+            if (!stompClient || !stompClient.connected) {
                 alert('채널에 연결되지 않았습니다.');
                 return;
             }
@@ -330,17 +293,15 @@
                 return;
             }
 
-            // 채팅 메시지 객체 생성
+            // [변경] ChatMessageDto 형식으로 전송
             const chatMessage = {
-                type: 'chat',
-                sender: '스트리머',
+                nickname: nickname,
                 message: message,
-                streamKey: streamKey,
                 timestamp: new Date().toISOString()
             };
 
-            // 서버의 /app/chat/{streamKey} 엔드포인트로 메시지 전송
-            stompClient.send(`/app/chat/${streamKey}`, {}, JSON.stringify(chatMessage));
+            // [변경] 새로운 엔드포인트로 메시지 전송
+            stompClient.send(`/pub/stream/${streamKey}/chat`, {}, JSON.stringify(chatMessage));
 
             // 입력창 초기화
             messageInput.value = '';
@@ -351,9 +312,9 @@
          */
         function onError(error) {
             console.error('STOMP 오류:', error);
-            isConnected = false;
             updateConnectionUI(false);
-            addMessage('시스템', 'STOMP 연결 오류가 발생했습니다: ' + error);
+            const errorMessage = error.headers ? error.headers.message : error;
+            addMessage('시스템', '연결 오류: ' + errorMessage, true);
         }
 
         /**
@@ -361,7 +322,6 @@
          */
         function updateConnectionUI(connected) {
             const statusDiv = document.getElementById('connectionStatus');
-            const streamChannelSpan = document.getElementById('streamChannel');
             const messageInput = document.getElementById('messageInput');
             const sendBtn = document.getElementById('sendBtn');
             const connectBtn = document.getElementById('connectBtn');
@@ -370,7 +330,7 @@
             if (connected) {
                 // 연결됨 상태 UI
                 statusDiv.className = 'status connected';
-                statusDiv.innerHTML = `<strong>상태:</strong> 연결됨 | <strong>채널:</strong> <span id="streamChannel">${streamKey}</span>`;
+                statusDiv.innerHTML = `<strong>상태:</strong> 연결됨 | <strong>채널:</strong> <span>${streamKey}</span>`;
                 messageInput.disabled = false;
                 sendBtn.disabled = false;
                 connectBtn.disabled = true;
@@ -378,7 +338,7 @@
             } else {
                 // 연결 안됨 상태 UI
                 statusDiv.className = 'status disconnected';
-                statusDiv.innerHTML = `<strong>상태:</strong> 연결 안됨 | <strong>채널:</strong> <span id="streamChannel">없음</span>`;
+                statusDiv.innerHTML = `<strong>상태:</strong> 연결 안됨 | <strong>채널:</strong> <span>없음</span>`;
                 messageInput.disabled = true;
                 sendBtn.disabled = true;
                 connectBtn.disabled = false;
@@ -389,12 +349,15 @@
         /**
          * 채팅 메시지 화면에 추가하는 함수
          */
-        function addMessage(sender, message) {
+        function addMessage(sender, message, isSystem) {
             const messagesDiv = document.getElementById('messages');
             const messageElement = document.createElement('div');
             const timestamp = new Date().toLocaleTimeString();
 
             messageElement.innerHTML = `<strong>[${timestamp}] ${sender}:</strong> ${message}`;
+            if (isSystem) {
+                messageElement.classList.add('system-message');
+            }
             messagesDiv.appendChild(messageElement);
 
             // 스크롤을 최신 메시지로 이동
@@ -444,7 +407,7 @@
          * 페이지 종료시 연결 정리
          */
         window.addEventListener('beforeunload', function () {
-            if (stompClient && isConnected) {
+            if (stompClient && stompClient.connected) {
                 disconnectStreamer();
             }
         });
