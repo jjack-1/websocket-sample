@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="ko">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>시청자 화면 - 리팩토링 버전</title>
+
+        <!-- STOMP 관련 라이브러리 추가 -->
+        <script src="https://cdn.jsdelivr.net/npm/sockjs-client/dist/sockjs.min.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/stompjs/lib/stomp.min.js"></script>
+
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                margin: 20px;
+                background-color: #f4f4f4;
+            }
+
+            #container {
+                max-width: 800px;
+                margin: auto;
+                background: white;
+                padding: 20px;
+                border-radius: 8px;
+                box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            }
+
+            #messages {
+                border: 1px solid #ccc;
+                padding: 10px;
+                height: 300px;
+                overflow-y: scroll;
+                margin-bottom: 10px;
+                background-color: #e9ecef;
+            }
+
+            input[type="text"] {
+                width: calc(100% - 70px);
+                padding: 8px;
+                margin-right: 5px;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+            }
+
+            button {
+                padding: 8px 15px;
+                background-color: #28a745;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                cursor: pointer;
+            }
+
+            button:hover {
+                background-color: #218838;
+            }
+
+            button:disabled {
+                background-color: #6c757d;
+                cursor: not-allowed;
+            }
+
+            h2,
+            h3 {
+                color: #333;
+            }
+
+            .connection-form {
+                margin-bottom: 20px;
+                padding: 15px;
+                background-color: #f8f9fa;
+                border-radius: 5px;
+            }
+
+            .connection-form input {
+                width: 150px;
+                margin-right: 10px;
+                margin-bottom: 10px;
+            }
+
+            .connection-form label {
+                display: inline-block;
+                width: 80px;
+                font-weight: bold;
+            }
+
+            .status {
+                padding: 10px;
+                margin: 10px 0;
+                border-radius: 4px;
+            }
+
+            .status.connected {
+                background-color: #d4edda;
+                color: #155724;
+                border: 1px solid #c3e6cb;
+            }
+
+            .status.disconnected {
+                background-color: #f8d7da;
+                color: #721c24;
+                border: 1px solid #f5c6cb;
+            }
+
+            .system-message {
+                color: #6c757d;
+                font-style: italic;
+            }
+        </style>
+    </head>
+
+    <body>
+        <div id="container">
+            <h2>시청자 채팅 화면 - 리팩토링 버전</h2>
+
+            <div class="connection-form">
+                <div>
+                    <label for="viewStreamKeyInput">스트림 키:</label>
+                    <input
+                        type="text"
+                        id="viewStreamKeyInput"
+                        placeholder="예: a1b2c3d4"
+                        value="a1b2c3d4"
+                    />
+                </div>
+                <div>
+                    <!-- [변경] JWT 토큰 입력란으로 변경 -->
+                    <label for="jwtInput">내 JWT 토큰:</label>
+                    <input
+                        type="text"
+                        id="jwtInput"
+                        placeholder="Bearer eyJhbGci..."
+                        value="Bearer user-viewer123-token"
+                    />
+                </div>
+                <button onclick="connectViewer()" id="connectBtn">
+                    채널 시청
+                </button>
+                <button
+                    onclick="disconnectViewer()"
+                    id="disconnectBtn"
+                    disabled
+                >
+                    시청 종료
+                </button>
+            </div>
+
+            <div id="connectionStatus" class="status disconnected">
+                <strong>상태:</strong> 연결 안됨 | <strong>시청 채널:</strong>
+                <span id="viewChannel">없음</span>
+            </div>
+            <hr />
+            <h3>채팅</h3>
+            <div id="messages"></div>
+            <input
+                type="text"
+                id="messageInput"
+                placeholder="메시지 입력..."
+                disabled
+            />
+            <button onclick="sendMessage()" disabled id="sendBtn">전송</button>
+        </div>
+
+        <script>
+            // 전역 변수 선언
+            let stompClient = null;
+            let streamKey = "";
+            let myNickname = "";
+            let myUserId = "";
+
+            /**
+             * 시청자 채널 연결 함수
+             */
+            function connectViewer() {
+                streamKey = document
+                    .getElementById("viewStreamKeyInput")
+                    .value.trim();
+                const jwtToken = document
+                    .getElementById("jwtInput")
+                    .value.trim(); // [변경] JWT 토큰 가져오기
+
+                if (!streamKey || !jwtToken) {
+                    alert("스트림 키와 JWT 토큰을 모두 입력해주세요.");
+                    return;
+                }
+
+                if (stompClient && stompClient.connected) {
+                    stompClient.disconnect();
+                }
+
+                const socket = new SockJS("http://localhost:8080/ws");
+                stompClient = Stomp.over(socket);
+                stompClient.debug = null;
+
+                // [변경] 연결 시 헤더에 JWT 토큰 추가
+                const headers = { Authorization: jwtToken };
+
+                stompClient.connect(
+                    headers,
+                    (frame) => {
+                        console.log("STOMP 연결 성공:", frame);
+                        // [변경] 서버에서 인증 후 전달받은 사용자 정보 사용
+                        myUserId = frame.headers["user-name"];
+                        myNickname = "시청자-" + myUserId.substring(5);
+                        onConnected();
+                    },
+                    (error) => {
+                        console.error("STOMP 연결 실패:", error);
+                        onError(error);
+                    }
+                );
+            }
+
+            /**
+             * 연결 성공시 처리 함수
+             */
+            function onConnected() {
+                updateConnectionUI(true);
+                addMessage(
+                    "시스템",
+                    `채널 ${streamKey} 시청을 시작합니다.`,
+                    true
+                );
+
+                // [변경] 새로운 엔드포인트로 구독
+                stompClient.subscribe(`/sub/${streamKey}/chat`, (message) => {
+                    const data = JSON.parse(message.body);
+                    // [변경] 새로운 DTO 구조에 맞춰 처리
+                    if (data.type) {
+                        // SystemMessageDto: 시스템 메시지
+                        addMessage("시스템", data.message, true);
+                    } else {
+                        // ChatMessageDto: 채팅 메시지
+                        addMessage(data.nickname, data.message, false);
+                    }
+                });
+
+                // [추가] 개인 알림 채널 구독 (강퇴, 채팅금지 등)
+                stompClient.subscribe(
+                    "/user/queue/notifications",
+                    (message) => {
+                        const notification = JSON.parse(message.body);
+                        alert(`개인 알림 수신: ${notification.message}`);
+                        // 채팅 금지 시 입력창 비활성화
+                        document.getElementById("messageInput").disabled = true;
+                        document.getElementById("sendBtn").disabled = true;
+                    }
+                );
+
+                // [변경] 새로운 엔드포인트로 참여 요청
+                stompClient.send(`/pub/stream/${streamKey}/join`, {}, {});
+            }
+
+            /**
+             * 연결 종료 함수
+             */
+            function disconnectViewer() {
+                if (stompClient && stompClient.connected) {
+                    // 연결 종료 (자동으로 StompDisconnectEvent가 처리함)
+                    stompClient.disconnect(() => {
+                        updateConnectionUI(false);
+                        addMessage(
+                            "시스템",
+                            "채널 시청이 종료되었습니다.",
+                            true
+                        );
+                        console.log("STOMP 연결 해제됨");
+                    });
+                }
+            }
+
+            /**
+             * 채팅 메시지 전송 함수
+             */
+            function sendMessage() {
+                const messageInput = document.getElementById("messageInput");
+                const message = messageInput.value.trim();
+
+                if (stompClient && stompClient.connected && message) {
+                    // [변경] ChatMessageDto 형식으로 전송
+                    const chatMessage = {
+                        nickname: myNickname,
+                        message: message,
+                    };
+                    // [변경] 새로운 엔드포인트로 메시지 전송
+                    stompClient.send(
+                        `/pub/stream/${streamKey}/chat`,
+                        {},
+                        JSON.stringify(chatMessage)
+                    );
+                    messageInput.value = "";
+                }
+            }
+
+            /**
+             * 연결 오류 처리 함수
+             */
+            function onError(error) {
+                console.error("STOMP 오류:", error);
+                updateConnectionUI(false);
+                const errorMessage = error.headers
+                    ? error.headers.message
+                    : error;
+                addMessage("시스템", "연결 오류: " + errorMessage, true);
+            }
+
+            /**
+             * UI 연결 상태 업데이트 함수
+             */
+            function updateConnectionUI(connected) {
+                const statusDiv = document.getElementById("connectionStatus");
+                const messageInput = document.getElementById("messageInput");
+                const sendBtn = document.getElementById("sendBtn");
+                const connectBtn = document.getElementById("connectBtn");
+                const disconnectBtn = document.getElementById("disconnectBtn");
+
+                if (connected) {
+                    statusDiv.className = "status connected";
+                    statusDiv.innerHTML = `<strong>상태:</strong> 연결됨 | <strong>시청 채널:</strong> <span>${streamKey}</span>`;
+                    messageInput.disabled = false;
+                    sendBtn.disabled = false;
+                    connectBtn.disabled = true;
+                    disconnectBtn.disabled = false;
+                } else {
+                    statusDiv.className = "status disconnected";
+                    statusDiv.innerHTML = `<strong>상태:</strong> 연결 안됨 | <strong>시청 채널:</strong> <span>없음</span>`;
+                    messageInput.disabled = true;
+                    sendBtn.disabled = true;
+                    connectBtn.disabled = false;
+                    disconnectBtn.disabled = true;
+                }
+            }
+
+            /**
+             * 채팅 메시지 화면에 추가하는 함수
+             */
+            function addMessage(sender, message, isSystem) {
+                const messagesDiv = document.getElementById("messages");
+                const msg = document.createElement("div");
+                const timestamp = new Date().toLocaleTimeString();
+
+                if (!isSystem && sender === myNickname) {
+                    msg.innerHTML = `<strong>[${timestamp}] 나:</strong> ${message}`;
+                    msg.style.color = "#007bff";
+                } else {
+                    msg.innerHTML = `<strong>[${timestamp}] ${sender}:</strong> ${message}`;
+                    if (isSystem) {
+                        msg.classList.add("system-message");
+                    }
+                }
+                messagesDiv.appendChild(msg);
+                messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            }
+
+            /**
+             * 키보드 이벤트 처리
+             */
+            document
+                .getElementById("messageInput")
+                .addEventListener("keypress", (e) => {
+                    if (e.key === "Enter") sendMessage();
+                });
+
+            /**
+             * 페이지 종료시 연결 정리
+             */
+            window.addEventListener("beforeunload", () => {
+                disconnectViewer();
+            });
+        </script>
+    </body>
+</html>
