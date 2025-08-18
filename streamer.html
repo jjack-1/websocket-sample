@@ -123,8 +123,8 @@
                     <input
                         type="text"
                         id="streamKeyInput"
-                        placeholder="예: a1b2c3d4"
-                        value="a1b2c3d4"
+                        placeholder="예: abc123"
+                        value="abc123"
                     />
                 </div>
                 <div>
@@ -134,7 +134,7 @@
                         type="text"
                         id="jwtInput"
                         placeholder="Bearer eyJhbGci..."
-                        value="Bearer streamer-a1b2c3d4-token"
+                        value="Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJzdWIiOiJsYXZpdSIsImlkIjoxLCJleHAiOjE3NTU1MjMxMTcsImVtYWlsIjoic3NhckBuYXRlLmNvbSIsInVzZXJuYW1lIjoic3NhckBuYXRlLmNvbSJ9.8a9P5dI44X5aHys_md8-jSIW3_PTRDCvcAp0DYbPbRZR6Ja6dngPQs1aGjiMFD10u4R4Gw7JIH-C-qIcEtPkrA"
                     />
                 </div>
                 <button onclick="connectStreamer()" id="connectBtn">
@@ -179,7 +179,7 @@
             // 전역 변수 선언
             let stompClient = null;
             let streamKey = "";
-            let nickname = "스트리머";
+            let authorNickname = "스트리머";
 
             /**
              * 스트리머 채널 연결 함수
@@ -251,7 +251,7 @@
             function subscribeToChannels() {
                 // [변경] 1. 채팅 및 시스템 메시지 채널 구독 (/sub/{streamKey}/chat)
                 stompClient.subscribe(
-                    `/sub/${streamKey}/chat`,
+                    `/sub/streams/${streamKey}/chats`,
                     function (message) {
                         const data = JSON.parse(message.body);
                         console.log("채팅 메시지 수신:", data);
@@ -262,14 +262,18 @@
                             addMessage("시스템", data.message, true);
                         } else {
                             // ChatMessageDto: 실제 채팅 메시지
-                            addMessage(data.nickname, data.message, false);
+                            addMessage(
+                                data.authorNickname,
+                                data.message,
+                                false
+                            );
                         }
                     }
                 );
 
                 // [변경] 2. 참가자 목록 업데이트 채널 구독 (/sub/{streamKey}/participants)
                 stompClient.subscribe(
-                    `/sub/${streamKey}/participants`,
+                    `/sub/streams/${streamKey}/participants`,
                     function (message) {
                         const data = JSON.parse(message.body);
                         console.log("참가자 목록 수신:", data);
@@ -296,7 +300,7 @@
              */
             function sendJoinMessage() {
                 // [변경] 새로운 엔드포인트로 참여 메시지 전송
-                stompClient.send(`/pub/stream/${streamKey}/join`, {}, {});
+                stompClient.send(`/pub/streams/${streamKey}/join`, {}, {});
             }
 
             /**
@@ -344,14 +348,14 @@
 
                 // [변경] ChatMessageDto 형식으로 전송
                 const chatMessage = {
-                    nickname: nickname,
+                    authorNickname: authorNickname,
                     message: message,
                     timestamp: new Date().toISOString(),
                 };
 
                 // [변경] 새로운 엔드포인트로 메시지 전송
                 stompClient.send(
-                    `/pub/stream/${streamKey}/chat`,
+                    `/pub/streams/${streamKey}/chats`,
                     {},
                     JSON.stringify(chatMessage)
                 );
@@ -443,7 +447,7 @@
                 // 참가자 목록 생성
                 participants.forEach((participant) => {
                     const li = document.createElement("li");
-                    li.textContent = `${participant.nickname} (ID: ${participant.userId})`;
+                    li.textContent = `${participant.nickname} (ID: ${participant.id})`;
                     participantsList.appendChild(li);
                 });
 
