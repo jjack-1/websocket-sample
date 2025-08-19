@@ -113,9 +113,10 @@
         <div id="container">
             <h2>시청자 채팅 화면 - 리팩토링 버전</h2>
 
+            <!-- 연결 설정 폼 -->
             <div class="connection-form">
                 <div>
-                    <label for="viewStreamKeyInput">스트림 키:</label>
+                    <label for="streamKeyInput">스트림 키:</label>
                     <input
                         type="text"
                         id="streamKeyInput"
@@ -124,24 +125,24 @@
                     />
                 </div>
                 <div>
-                    <!-- [변경] JWT 토큰 입력란으로 변경 -->
-                    <label for="jwtInput">내 JWT 토큰:</label>
+                    <!-- [추가] JWT 토큰 입력란 -->
+                    <label for="jwtInput">JWT 토큰:</label>
                     <input
                         type="text"
                         id="jwtInput"
                         placeholder="Bearer eyJhbGci..."
-                        value="Bearer user-viewer123-token"
+                        value="Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJzdWIiOiJsYXZpdSIsIm5pY2tuYW1lIjoiY29zIiwiaWQiOjIsImV4cCI6MTc1NjE4NTgwNSwiZW1haWwiOiJjb3NAbmF0ZS5jb20ifQ.2UYQZR2PR_sdxzP9Hst51CGsjk0E7vZfIYHvUNm8CL14WPPr_4pOysP8SNshaS9bBNYrFJVeMRV-518m15vHoQ"
                     />
                 </div>
                 <button onclick="connectViewer()" id="connectBtn">
-                    채널 시청
+                    채널 시작
                 </button>
                 <button
                     onclick="disconnectViewer()"
                     id="disconnectBtn"
                     disabled
                 >
-                    시청 종료
+                    연결 종료
                 </button>
             </div>
 
@@ -173,7 +174,7 @@
              */
             function connectViewer() {
                 streamKey = document
-                    .getElementById("viewStreamKeyInput")
+                    .getElementById("streamKeyInput")
                     .value.trim();
                 const jwtToken = document
                     .getElementById("jwtInput")
@@ -197,14 +198,11 @@
 
                 stompClient.connect(
                     headers,
-                    (frame) => {
+                    function (frame) {
                         console.log("STOMP 연결 성공:", frame);
-                        // [변경] 서버에서 인증 후 전달받은 사용자 정보 사용
-                        myUserId = frame.headers["user-name"];
-                        myNickname = "시청자-" + myUserId.substring(5);
                         onConnected();
                     },
-                    (error) => {
+                    function (error) {
                         console.error("STOMP 연결 실패:", error);
                         onError(error);
                     }
@@ -223,17 +221,24 @@
                 );
 
                 // [변경] 새로운 엔드포인트로 구독
-                stompClient.subscribe(`/sub/${streamKey}/chat`, (message) => {
-                    const data = JSON.parse(message.body);
-                    // [변경] 새로운 DTO 구조에 맞춰 처리
-                    if (data.type) {
-                        // SystemMessageDto: 시스템 메시지
-                        addMessage("시스템", data.message, true);
-                    } else {
-                        // ChatMessageDto: 채팅 메시지
-                        addMessage(data.nickname, data.message, false);
+                stompClient.subscribe(
+                    `/sub/streams/${streamKey}/chats`,
+                    function (message) {
+                        const data = JSON.parse(message.body);
+                        console.log("채팅 메시지 수신:", data);
+
+                        // [변경] 새로운 DTO 구조에 맞춰 처리
+                        if (data.type) {
+                            // SystemMessageDto: 시스템 메시지 (입장, 퇴장 알림 등)
+                            addMessage("시스템", data.message, true);
+                        } else {
+                            // ChatMessageDto: 실제 채팅 메시지
+                            data.forEach((d) => {
+                                addMessage(d.authorNickname, d.content, false);
+                            });
+                        }
                     }
-                });
+                );
 
                 // [추가] 개인 알림 채널 구독 (강퇴, 채팅금지 등)
                 stompClient.subscribe(
@@ -248,7 +253,7 @@
                 );
 
                 // [변경] 새로운 엔드포인트로 참여 요청
-                stompClient.send(`/pub/stream/${streamKey}/join`, {}, {});
+                stompClient.send(`/pub/streams/${streamKey}/join`, {}, {});
             }
 
             /**
@@ -279,12 +284,11 @@
                 if (stompClient && stompClient.connected && message) {
                     // [변경] ChatMessageDto 형식으로 전송
                     const chatMessage = {
-                        nickname: myNickname,
-                        message: message,
+                        content: message,
                     };
                     // [변경] 새로운 엔드포인트로 메시지 전송
                     stompClient.send(
-                        `/pub/stream/${streamKey}/chat`,
+                        `/pub/streams/${streamKey}/chats`,
                         {},
                         JSON.stringify(chatMessage)
                     );
